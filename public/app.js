@@ -1028,10 +1028,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // If we're not in a room and there are multiple users, show auto-connect button
       if (!currentRoomCode && data.users.length > 1) {
-        networkIdElement.innerHTML =
-          networkIdElement.textContent +
-          ' <span class="same-network">(Users detected on your network)</span>'
-
         // Show the auto-connect button
         autoConnectBtn.classList.remove('hidden')
       }
@@ -1070,11 +1066,6 @@ document.addEventListener('DOMContentLoaded', () => {
       roomCodeDisplay.textContent = currentRoomCode
       roomCodeDisplay.classList.remove('hidden')
       shareCodeBtn.classList.remove('hidden')
-
-      // Update network info display
-      networkIdElement.innerHTML =
-        networkIdElement.textContent +
-        ' <span class="same-network">(Auto-connected)</span>'
 
       // Hide auto-connect button
       autoConnectBtn.classList.add('hidden')
