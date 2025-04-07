@@ -10,6 +10,14 @@ const server = http.createServer(app)
 const io = new Server(server, {
   maxHttpBufferSize: 20 * 1024 * 1024, // 20MB max message size
   pingTimeout: 60000, // Increased timeout
+  pingInterval: 5000, // More frequent pings for better connection maintenance
+  transports: ['websocket', 'polling'], // Prefer WebSocket for lower latency
+  upgrade: true, // Allow transport upgrade
+  connectTimeout: 20000, // Increase connection timeout
+  cors: {
+    origin: '*', // Allow all origins for better compatibility
+    methods: ['GET', 'POST'],
+  },
 })
 
 // Create uploads directory if it doesn't exist
@@ -245,14 +253,17 @@ io.on('connection', (socket) => {
       userData.latency = latency
       users.set(sessionId, userData)
       console.log(`Measured latency for ${sessionId}: ${latency}ms`)
+
+      // Send the latency back to client for display
+      socket.emit('pong-response', { latency })
     }
 
-    // Keep measuring latency periodically
+    // Keep measuring latency more frequently for better responsiveness
     setTimeout(() => {
       if (socket.connected) {
         socket.emit('ping', { timestamp: Date.now() })
       }
-    }, 10000) // Every 10 seconds
+    }, 3000) // Every 3 seconds instead of 10 for more responsive updates
   })
 
   // Register user in our tracking map
@@ -906,44 +917,50 @@ io.on('connection', (socket) => {
     if (user && user.isHost) {
       // Add server timestamp for more precise calculation
       const serverTimestamp = Date.now()
-      const enhancedData = {
-        ...data,
-        serverTimestamp,
-      }
 
-      // Check if this is a precision sync update (higher priority)
-      const isPrecision = data.precision === true
-
-      // Track delays for adaptive sync
-      const messageAge =
-        serverTimestamp - (data.clientTimestamp || serverTimestamp)
-
-      // Only send to clients in the same group with their specific latency adjustment
-      for (const clientId of networks.get(user.networkId) || []) {
-        // Skip the host
-        if (clientId === sessionId) continue
-
-        const clientData = users.get(clientId)
-        if (!clientData || clientData.isHost) continue
-
-        const clientSocket = io.sockets.sockets.get(clientData.socketId)
-        if (clientSocket && clientSocket.connected) {
-          // Include this client's specific latency for accurate adjustment
-          // Also include any server processing delay we observed
-          clientSocket.emit(
-            'audio-time-update',
-            {
-              ...enhancedData,
-              latency: clientData.latency,
-              serverDelay: messageAge,
-            },
-            {
-              // If this is a precision update, use higher priority
-              priority: isPrecision ? 'high' : undefined,
-            }
-          )
+      // Priority processing for sync messages
+      process.nextTick(() => {
+        const enhancedData = {
+          ...data,
+          serverTimestamp,
+          priority: true,
         }
-      }
+
+        // Check if this is a precision sync update (higher priority)
+        const isPrecision = data.precision === true
+
+        // Track delays for adaptive sync
+        const messageAge =
+          serverTimestamp - (data.clientTimestamp || serverTimestamp)
+
+        // Only send to clients in the same group with their specific latency adjustment
+        for (const clientId of networks.get(user.networkId) || []) {
+          // Skip the host
+          if (clientId === sessionId) continue
+
+          const clientData = users.get(clientId)
+          if (!clientData || clientData.isHost) continue
+
+          const clientSocket = io.sockets.sockets.get(clientData.socketId)
+          if (clientSocket && clientSocket.connected) {
+            // Include this client's specific latency for accurate adjustment
+            // Also include any server processing delay we observed
+            clientSocket.volatile.emit(
+              'audio-time-update',
+              {
+                ...enhancedData,
+                latency: clientData.latency,
+                serverDelay: messageAge,
+                adaptiveSyncEnabled: true,
+              },
+              {
+                // If this is a precision update, use higher priority
+                priority: isPrecision ? 'high' : undefined,
+              }
+            )
+          }
+        }
+      })
     }
   })
 

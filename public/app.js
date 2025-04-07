@@ -15,6 +15,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const usersList = document.getElementById('users-list')
   const acceptAudioContainer = document.getElementById('accept-audio-container')
   const acceptAudioButton = document.getElementById('accept-audio-button')
+  const latencyIndicator = document.getElementById('latency-indicator')
+  const latencyValue = document.getElementById('latency-value')
 
   // Room Management Elements
   const roomStatus = document.getElementById('room-status')
@@ -796,6 +798,21 @@ document.addEventListener('DOMContentLoaded', () => {
     networkIdElement.textContent = 'Detecting network...'
     networkUsersElement.textContent = '1' // At least yourself
 
+    // Reset latency indicator
+    latencyIndicator.classList.remove(
+      'latency-good',
+      'latency-medium',
+      'latency-poor'
+    )
+    latencyIndicator.classList.add('latency-unknown')
+    latencyValue.textContent = '--'
+
+    // Reset latency tracking
+    latencyHistory = []
+    currentLatency = 0
+    lastPingTime = Date.now()
+    missedPings = 0
+
     // Update room status
     if (currentRoomCode) {
       roomStatus.textContent = `Reconnecting to room...`
@@ -948,8 +965,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Network latency measurement
   socket.on('ping', (data) => {
+    // Update last ping time for connection monitoring
+    lastPingTime = Date.now()
+
     // Respond immediately to calculate round-trip time
     socket.emit('pong', data)
+
+    // Reset missed pings counter since we got a ping
+    missedPings = 0
+  })
+
+  // Handle pong response from server with latency information
+  socket.on('pong-response', (data) => {
+    if (data && typeof data.latency === 'number') {
+      // Store latency in history for averaging
+      currentLatency = data.latency
+
+      // Add to history and keep limited size
+      latencyHistory.push(currentLatency)
+      if (latencyHistory.length > MAX_LATENCY_HISTORY) {
+        latencyHistory.shift() // Remove oldest entry
+      }
+
+      // Update the latency indicator with average value for stability
+      updateLatencyIndicator(getAverageLatency())
+    }
   })
 
   // Auto-discovery of users on the same network
@@ -1065,6 +1105,15 @@ document.addEventListener('DOMContentLoaded', () => {
   socket.on('disconnect', () => {
     connectionStatus.textContent = 'Disconnected'
     connectionStatus.style.color = 'red'
+
+    // Update latency indicator to show disconnected
+    latencyIndicator.classList.remove(
+      'latency-good',
+      'latency-medium',
+      'latency-poor'
+    )
+    latencyIndicator.classList.add('latency-unknown')
+    latencyValue.textContent = '--'
 
     // Clean up streaming resources if disconnected
     if (isStreaming) {
@@ -2449,4 +2498,105 @@ document.addEventListener('DOMContentLoaded', () => {
         })
     }
   })
+
+  // Track connection quality
+  let currentLatency = 0
+  let latencyHistory = []
+  const MAX_LATENCY_HISTORY = 5 // Keep track of last 5 measurements for stability
+
+  // Connection reliability tracking
+  let lastPingTime = 0
+  let missedPings = 0
+  const MAX_MISSED_PINGS = 3
+
+  // Enhanced adaptive sync for audio
+  let syncOffset = 0
+  let syncOffsetHistory = []
+  const MAX_SYNC_OFFSET_HISTORY = 3
+
+  // Update latency indicator with the current value
+  function updateLatencyIndicator(latency) {
+    // Update the latency value display
+    latencyValue.textContent = Math.round(latency)
+
+    // Remove all existing classes
+    latencyIndicator.classList.remove(
+      'latency-unknown',
+      'latency-good',
+      'latency-medium',
+      'latency-poor'
+    )
+
+    // Add appropriate class based on latency value
+    if (latency < 50) {
+      latencyIndicator.classList.add('latency-good')
+    } else if (latency < 150) {
+      latencyIndicator.classList.add('latency-medium')
+    } else {
+      latencyIndicator.classList.add('latency-poor')
+    }
+  }
+
+  // Calculate average latency from history for more stable display
+  function getAverageLatency() {
+    if (latencyHistory.length === 0) return 0
+    const sum = latencyHistory.reduce((acc, val) => acc + val, 0)
+    return sum / latencyHistory.length
+  }
+
+  // Check connection health periodically
+  function monitorConnectionHealth() {
+    const now = Date.now()
+
+    // If we haven't received a ping in 10 seconds
+    if (lastPingTime > 0 && now - lastPingTime > 10000) {
+      missedPings++
+
+      if (missedPings >= MAX_MISSED_PINGS) {
+        // Connection is likely dropped
+        connectionStatus.textContent = 'Connection issues detected'
+        connectionStatus.style.color = 'red'
+
+        // Try to reconnect
+        if (socket.disconnected) {
+          socket.connect()
+        }
+      }
+    }
+  }
+
+  // Start periodic connection health monitoring
+  setInterval(monitorConnectionHealth, 5000)
+
+  // Function to calculate adaptive sync offset based on network conditions
+  function calculateAdaptiveSyncOffset(data) {
+    if (!data) return 0
+
+    // Base latency compensation
+    let offset = data.latency || 0
+
+    // Add server processing delay
+    if (data.serverDelay) {
+      offset += data.serverDelay
+    }
+
+    // Add client-side processing buffer (higher for poor connections)
+    if (currentLatency > 150) {
+      // For poor connections, add more buffer
+      offset += 20
+    } else if (currentLatency > 80) {
+      // For medium connections, add a smaller buffer
+      offset += 10
+    }
+
+    // Add to history for stability
+    syncOffsetHistory.push(offset)
+    if (syncOffsetHistory.length > MAX_SYNC_OFFSET_HISTORY) {
+      syncOffsetHistory.shift()
+    }
+
+    // Use average for stability
+    const sum = syncOffsetHistory.reduce((acc, val) => acc + val, 0)
+    return sum / syncOffsetHistory.length
+  }
 })
