@@ -10,7 +10,7 @@ const server = http.createServer(app)
 const io = new Server(server, {
   maxHttpBufferSize: 20 * 1024 * 1024, // 20MB max message size
   pingTimeout: 60000, // Increased timeout
-  pingInterval: 5000, // More frequent pings for better connection maintenance
+  pingInterval: 700000, // More frequent pings for better connection maintenance
   transports: ['websocket', 'polling'], // Prefer WebSocket for lower latency
   upgrade: true, // Allow transport upgrade
   connectTimeout: 20000, // Increase connection timeout
