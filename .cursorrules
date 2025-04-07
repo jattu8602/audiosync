@@ -1,0 +1,27 @@
+Rule Name: technology.mdc
+Description:
+
+# SoundSync Technologies
+
+SoundSync uses the following technologies:
+
+- **Node.js + Express**: Backend server framework
+- **Socket.IO**: Real-time bidirectional communication for audio synchronization
+- **HTML5 Audio API**: For audio playback across devices
+- **Vanilla JavaScript**: For client-side functionality
+- **CSS3**: For styling and responsive design
+
+The implementation leverages WebSockets through Socket.IO to ensure real-time audio synchronization between devices on the same network.
+
+Rule Name: plan.mdc
+Description:
+
+# Plan
+
+- Create a website that allows users connected to the same WiFi/hotspot to listen to synchronized audio
+- The first user to connect becomes the host and controls the audio playback
+- When the host plays any sound, all other connected devices play the same sound in real-time
+- Implementation uses Socket.IO for real-time communication between devices
+- Single page website with responsive design
+- Host can upload audio files and control playback (play, pause, seek)
+- All clients automatically synchronize with the host's playback

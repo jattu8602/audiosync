@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SoundSync - Synchronized Audio Player</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#3498db" />
+    <link rel="apple-touch-icon" href="/images/icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+  </head>
+  <body>
+    <div class="container">
+      <h1>SoundSync</h1>
+      <div id="status-bar">
+        <div id="connection-status">Connecting...</div>
+        <div id="role-status">...</div>
+      </div>
+
+      <div id="network-info" class="network-info">
+        <div class="network-status">
+          <h3>Network Status</h3>
+          <p id="network-id">Detecting network...</p>
+          <p id="network-users">Users on your network: <span>0</span></p>
+        </div>
+      </div>
+
+      <div class="audio-container">
+        <div id="host-controls" class="hidden">
+          <h2>You are the Host</h2>
+          <p>
+            Choose an audio file to play. All connected users on your network
+            will hear the same audio in sync.
+          </p>
+          <input type="file" id="audio-file-input" accept="audio/*" />
+
+          <div class="stream-controls">
+            <h3>Or Stream Browser Tab Audio</h3>
+            <p>
+              Share audio playing in your browser (e.g., YouTube, Netflix) with
+              connected users.
+            </p>
+            <button id="stream-tab-audio" class="primary-button">
+              Stream Tab Audio
+            </button>
+            <button id="stop-streaming" class="secondary-button hidden">
+              Stop Streaming
+            </button>
+            <div id="stream-status" class="status-message"></div>
+          </div>
+        </div>
+
+        <div id="client-message" class="hidden">
+          <h2>You are connected as a Client</h2>
+          <p id="client-status">Waiting for the host to play audio...</p>
+          <div id="loading-indicator" class="loading-bar hidden">
+            <div class="loading-progress"></div>
+          </div>
+          <div id="accept-audio-container" class="hidden">
+            <p>The host wants to play audio on your device</p>
+            <button id="accept-audio-button" class="primary-button">
+              Accept Audio
+            </button>
+          </div>
+        </div>
+
+        <div id="player-container" class="hidden">
+          <audio id="audio-player" controls></audio>
+          <div class="playback-info">
+            <div class="time-display">
+              <span id="current-time">0:00</span> /
+              <span id="duration">0:00</span>
+            </div>
+            <div class="progress-bar-container">
+              <div id="progress-bar"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="connected-users">
+        <h3>Connected Users on Your Network</h3>
+        <ul id="users-list">
+          <!-- Users will be listed here -->
+        </ul>
+      </div>
+
+      <div class="install-app hidden" id="install-prompt">
+        <button id="install-button">Install SoundSync App</button>
+      </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="app.js"></script>
+    <script>
+      // Register service worker for PWA
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker
+            .register('/service-worker.js')
+            .then((reg) => console.log('Service Worker registered'))
+            .catch((err) =>
+              console.log('Service Worker registration failed:', err)
+            )
+        })
+      }
+
+      // Handle PWA installation
+      let deferredPrompt
+      const installButton = document.getElementById('install-button')
+      const installPrompt = document.getElementById('install-prompt')
+
+      window.addEventListener('beforeinstallprompt', (e) => {
+        // Prevent Chrome 67 and earlier from automatically showing the prompt
+        e.preventDefault()
+        // Stash the event so it can be triggered later
+        deferredPrompt = e
+        // Show the install button
+        installPrompt.classList.remove('hidden')
+      })
+
+      installButton.addEventListener('click', () => {
+        // Hide the install prompt
+        installPrompt.classList.add('hidden')
+        // Show the installation prompt
+        deferredPrompt.prompt()
+        // Wait for the user to respond to the prompt
+        deferredPrompt.userChoice.then((choiceResult) => {
+          if (choiceResult.outcome === 'accepted') {
+            console.log('User accepted the install prompt')
+          } else {
+            console.log('User dismissed the install prompt')
+          }
+          deferredPrompt = null
+        })
+      })
+    </script>
+  </body>
+</html>
