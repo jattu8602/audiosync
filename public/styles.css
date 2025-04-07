@@ -609,3 +609,16 @@ input[type="file"] {
   font-weight: 600;
   color: #34495e;
 }
+
+#auto-connect-btn {
+  display: block;
+  margin-top: 10px;
+  background-color: #3498db;
+  font-size: 0.9rem;
+  padding: 8px 12px;
+  width: 100%;
+}
+
+#auto-connect-btn:hover {
+  background-color: #2980b9;
+}

@@ -23,6 +23,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const joinRoomBtn = document.getElementById('join-room-btn')
   const roomCodeInput = document.getElementById('room-code-input')
   const shareCodeBtn = document.getElementById('share-code-btn')
+  const autoConnectBtn = document.getElementById('auto-connect-btn')
 
   // Tab streaming controls
   const streamTabButton = document.getElementById('stream-tab-audio')
@@ -951,6 +952,115 @@ document.addEventListener('DOMContentLoaded', () => {
     socket.emit('pong', data)
   })
 
+  // Auto-discovery of users on the same network
+  socket.on('auto-discovery', (data) => {
+    console.log('Auto-discovered users on network:', data)
+
+    // Update the network status
+    if (data.networkId === currentNetworkId) {
+      // We're on the same network as these users
+
+      // Update the user count in the UI
+      networkUsersElement.textContent = data.users.length
+
+      // Update the user list with auto-discovered users
+      updateUsersList(data.users)
+
+      // Mark as being on the same network
+      onSameNetwork = true
+
+      // Show notification for newly detected users (only if the count increased)
+      const previousCount = parseInt(
+        localStorage.getItem('soundsync_last_user_count') || '0'
+      )
+      if (data.users.length > previousCount) {
+        connectionStatus.textContent = 'New user detected on your network!'
+        setTimeout(() => {
+          connectionStatus.textContent = 'Connected'
+        }, 3000)
+      }
+
+      // Remember current count
+      localStorage.setItem(
+        'soundsync_last_user_count',
+        data.users.length.toString()
+      )
+
+      // If we're not in a room and there are multiple users, show auto-connect button
+      if (!currentRoomCode && data.users.length > 1) {
+        networkIdElement.innerHTML =
+          networkIdElement.textContent +
+          ' <span class="same-network">(Users detected on your network)</span>'
+
+        // Show the auto-connect button
+        autoConnectBtn.classList.remove('hidden')
+      }
+    }
+  })
+
+  // Auto-connect button click handler
+  autoConnectBtn.addEventListener('click', () => {
+    if (currentRoomCode) return // Skip if already in a room
+
+    // Find a host in the network or create a new room
+    const networkHost = findNetworkHost()
+
+    if (networkHost) {
+      // If there's a host in the network, join their session
+      connectionStatus.textContent = 'Auto-connecting to network host...'
+
+      // Request to join the host's session
+      socket.emit('auto-join-host', {
+        hostId: networkHost.id,
+      })
+    } else {
+      // If no host, create a new room
+      connectionStatus.textContent = 'Creating room for network users...'
+      socket.emit('create-room')
+    }
+  })
+
+  // Handle auto-join response
+  socket.on('auto-join-result', (data) => {
+    if (data.success) {
+      currentRoomCode = data.roomCode
+      localStorage.setItem('soundsync_room_code', currentRoomCode)
+
+      roomStatus.textContent = `Auto-joined room:`
+      roomCodeDisplay.textContent = currentRoomCode
+      roomCodeDisplay.classList.remove('hidden')
+      shareCodeBtn.classList.remove('hidden')
+
+      // Update network info display
+      networkIdElement.innerHTML =
+        networkIdElement.textContent +
+        ' <span class="same-network">(Auto-connected)</span>'
+
+      // Hide auto-connect button
+      autoConnectBtn.classList.add('hidden')
+
+      connectionStatus.textContent = 'Connected'
+    } else {
+      connectionStatus.textContent = 'Auto-connection failed'
+      setTimeout(() => {
+        connectionStatus.textContent = 'Connected'
+      }, 3000)
+    }
+  })
+
+  // Helper function to find a host in the network
+  function findNetworkHost() {
+    // Get all users from the list
+    const allUsers = Array.from(usersList.querySelectorAll('li')).map((li) => {
+      const isHost = li.classList.contains('host-user')
+      const userId = li.getAttribute('data-user-id')
+      return { id: userId, isHost }
+    })
+
+    // Find a host
+    return allUsers.find((user) => user.isHost)
+  }
+
   // Handle disconnect
   socket.on('disconnect', () => {
     connectionStatus.textContent = 'Disconnected'
@@ -1173,6 +1283,9 @@ document.addEventListener('DOMContentLoaded', () => {
     function createUserListItem(user, isCurrentUser) {
       const li = document.createElement('li')
       let classes = []
+
+      // Add user ID as data attribute for auto-connect functionality
+      li.setAttribute('data-user-id', user.id)
 
       // Create user display with IP suffix for identification
       let userDisplay = `User ${user.id.substring(0, 6)}...`

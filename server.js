@@ -577,6 +577,106 @@ io.on('connection', (socket) => {
     console.log(`User ${sessionId} joined room ${roomCode}`)
   })
 
+  // Auto-join host session
+  socket.on('auto-join-host', (data) => {
+    const user = users.get(sessionId)
+    if (!user) return
+
+    const hostId = data.hostId
+    const hostUser = users.get(hostId)
+
+    // Check if the host exists and is actually a host
+    if (!hostUser || !hostUser.isHost) {
+      socket.emit('auto-join-result', {
+        success: false,
+        error: 'Host not found or not a host',
+      })
+      return
+    }
+
+    // Check if host has a room code
+    if (!hostUser.roomCode) {
+      // Create a room code for the host first
+      const newRoomCode = generateRoomCode()
+
+      // Add host to the room
+      let room = new Set([hostId])
+      rooms.set(newRoomCode, room)
+
+      // Update host data
+      hostUser.roomCode = newRoomCode
+      users.set(hostId, hostUser)
+
+      // Notify host about the new room
+      const hostSocket = io.sockets.sockets.get(hostUser.socketId)
+      if (hostSocket && hostSocket.connected) {
+        hostSocket.emit('room-created', {
+          roomCode: newRoomCode,
+          isHost: true,
+          autoCreated: true,
+        })
+
+        hostSocket.emit('network-info', {
+          networkId: hostUser.networkId,
+          roomCode: newRoomCode,
+          userCount: 1,
+        })
+      }
+    }
+
+    // Now join the host's room
+    const roomCode = hostUser.roomCode
+
+    // Remove from old room if any
+    if (user.roomCode) {
+      const oldRoom = rooms.get(user.roomCode)
+      if (oldRoom) {
+        oldRoom.delete(sessionId)
+        if (oldRoom.size === 0) {
+          rooms.delete(user.roomCode)
+        } else {
+          updateUsersInGroup(user.roomCode)
+        }
+      }
+    }
+
+    // Add to host's room
+    let room = rooms.get(roomCode)
+    if (!room) {
+      room = new Set()
+      rooms.set(roomCode, room)
+    }
+    room.add(sessionId)
+
+    // Update user data
+    user.roomCode = roomCode
+    user.isHost = false
+    users.set(sessionId, user)
+
+    // Send success response
+    socket.emit('auto-join-result', {
+      success: true,
+      roomCode: roomCode,
+    })
+
+    // Update network info
+    socket.emit('network-info', {
+      networkId: user.networkId,
+      roomCode: roomCode,
+      userCount: room.size,
+    })
+
+    // Update host status
+    socket.emit('host-status', { isHost: false })
+
+    // Update user lists
+    updateUsersInGroup(roomCode)
+
+    console.log(
+      `User ${sessionId} auto-joined host ${hostId}'s room ${roomCode}`
+    )
+  })
+
   // Handle audio control events from host
   socket.on('audio-control', (data) => {
     const user = users.get(sessionId)
@@ -994,6 +1094,48 @@ io.on('connection', (socket) => {
     return ip
   }
 })
+
+// Add a new function for automatic user discovery
+function broadcastNetworkUsers() {
+  // For each network, broadcast active users to everyone in that network
+  for (const [networkId, usersInNetwork] of networks.entries()) {
+    if (usersInNetwork.size > 1) {
+      // If there are multiple users in this network
+
+      // Create a list of users for this network
+      const networkUsersList = Array.from(usersInNetwork)
+        .map((userId) => {
+          const user = users.get(userId)
+          if (!user) return null
+
+          return {
+            id: userId,
+            isHost: user.isHost,
+            ipSuffix: getLastPart(user.ip),
+          }
+        })
+        .filter(Boolean)
+
+      // Broadcast to all users in this network
+      for (const userId of usersInNetwork) {
+        const user = users.get(userId)
+        if (!user) continue
+
+        const userSocket = io.sockets.sockets.get(user.socketId)
+        if (userSocket && userSocket.connected) {
+          userSocket.emit('auto-discovery', {
+            networkId,
+            users: networkUsersList,
+          })
+        }
+      }
+    }
+  }
+}
+
+// Set up periodic broadcasts of network users
+const AUTO_DISCOVERY_INTERVAL = 5000 // 5 seconds
+setInterval(broadcastNetworkUsers, AUTO_DISCOVERY_INTERVAL)
 
 // Use environment variable for port or default to 3000
 const PORT = process.env.PORT || 3000
