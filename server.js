@@ -325,6 +325,13 @@ io.on('connection', (socket) => {
     existingUser.networkId = networkId
     users.set(sessionId, existingUser)
 
+    // Get the network set for notifications
+    let network = networks.get(networkId)
+    if (!network) {
+      network = new Set()
+      networks.set(networkId, network)
+    }
+
     // Notify all users on the same network that a new user has joined
     for (const userId of network) {
       const otherUser = users.get(userId)
