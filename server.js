@@ -824,6 +824,74 @@ io.on('connection', (socket) => {
     })
   })
 
+  // Handle host transfer request
+  socket.on('transfer-host', (data) => {
+    const currentUser = users.get(sessionId)
+
+    // Check if the requester is actually the host
+    if (!currentUser || !currentUser.isHost) {
+      socket.emit('host-transfer-result', {
+        success: false,
+        error: 'Only the current host can transfer host status',
+        previousHostId: sessionId,
+      })
+      return
+    }
+
+    // Get the new host by session ID
+    const newHostId = data.newHostId
+    const newHost = users.get(newHostId)
+
+    // Check if the new host exists and is on the same network
+    if (!newHost) {
+      socket.emit('host-transfer-result', {
+        success: false,
+        error: 'User not found',
+        previousHostId: sessionId,
+      })
+      return
+    }
+
+    // Check if both users are on the same network
+    if (newHost.networkId !== currentUser.networkId) {
+      socket.emit('host-transfer-result', {
+        success: false,
+        error: 'Cannot transfer host to a user on a different network',
+        previousHostId: sessionId,
+      })
+      return
+    }
+
+    console.log(`Transferring host from ${sessionId} to ${newHostId}`)
+
+    // Remove host status from current host
+    currentUser.isHost = false
+    users.set(sessionId, currentUser)
+
+    // Give host status to new host
+    newHost.isHost = true
+    users.set(newHostId, newHost)
+
+    // Update the current host reference
+    currentHost = newHostId
+
+    // Notify both users about the change
+    socket.emit('host-status', { isHost: false })
+    io.to(newHost.socketId).emit('host-status', { isHost: true })
+
+    // Send transfer result to previous host
+    socket.emit('host-transfer-result', {
+      success: true,
+      previousHostId: sessionId,
+      newHostId: newHostId,
+    })
+
+    // Update user list for everyone in the network
+    updateUsersInGroup(currentUser.networkId)
+
+    console.log(`Host transfer complete: ${newHostId} is now the host`)
+  })
+
   // Handle audio time updates
   socket.on('audio-time-update', (data) => {
     const user = users.get(sessionId)
