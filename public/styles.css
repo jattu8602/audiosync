@@ -81,6 +81,62 @@ h3 {
   color: #dc3545;
 }
 
+/* Room management */
+.room-management {
+  background-color: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 5px;
+  padding: 15px;
+  margin-bottom: 20px;
+}
+
+.room-controls h3 {
+  margin-top: 0;
+  color: #2c3e50;
+  margin-bottom: 10px;
+  font-size: 1rem;
+}
+
+#room-status {
+  margin: 5px 0;
+  font-size: 0.9rem;
+  color: #495057;
+}
+
+.room-code {
+  font-family: monospace;
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: #3498db;
+  text-align: center;
+  padding: 10px;
+  margin: 10px 0;
+  background: #eaf2f8;
+  border-radius: 5px;
+  border: 1px dashed #3498db;
+}
+
+#room-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.join-form {
+  display: flex;
+  gap: 10px;
+}
+
+#room-code-input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #ced4da;
+  border-radius: 5px;
+  font-size: 1rem;
+  text-transform: uppercase;
+}
+
 .audio-container {
   background-color: white;
   padding: 20px;

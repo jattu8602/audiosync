@@ -16,6 +16,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const acceptAudioContainer = document.getElementById('accept-audio-container')
   const acceptAudioButton = document.getElementById('accept-audio-button')
 
+  // Room Management Elements
+  const roomStatus = document.getElementById('room-status')
+  const roomCodeDisplay = document.getElementById('room-code')
+  const createRoomBtn = document.getElementById('create-room-btn')
+  const joinRoomBtn = document.getElementById('join-room-btn')
+  const roomCodeInput = document.getElementById('room-code-input')
+
   // Tab streaming controls
   const streamTabButton = document.getElementById('stream-tab-audio')
   const stopStreamingButton = document.getElementById('stop-streaming')
@@ -34,11 +41,15 @@ document.addEventListener('DOMContentLoaded', () => {
     localStorage.setItem('soundsync_session_id', sessionId)
   }
 
+  // Get stored room code if any
+  let currentRoomCode = localStorage.getItem('soundsync_room_code')
+
   // Socket.IO connection with auth
   const socket = io({
     auth: {
       sessionId,
       wasHost: localStorage.getItem('soundsync_was_host') === 'true',
+      roomCode: currentRoomCode,
     },
     reconnectionAttempts: 10,
     reconnectionDelay: 1000,
@@ -783,6 +794,13 @@ document.addEventListener('DOMContentLoaded', () => {
     networkIdElement.textContent = 'Detecting network...'
     networkUsersElement.textContent = '1' // At least yourself
 
+    // Update room status
+    if (currentRoomCode) {
+      roomStatus.textContent = `Reconnecting to room...`
+    } else {
+      roomStatus.textContent = 'Not in a room'
+    }
+
     // Try to initialize audio context early
     initAudioContext()
 
@@ -820,6 +838,20 @@ document.addEventListener('DOMContentLoaded', () => {
   socket.on('network-info', (data) => {
     currentNetworkId = data.networkId
 
+    // Update room code if received
+    if (data.roomCode) {
+      currentRoomCode = data.roomCode
+      localStorage.setItem('soundsync_room_code', currentRoomCode)
+      roomStatus.textContent = `In room:`
+      roomCodeDisplay.textContent = currentRoomCode
+      roomCodeDisplay.classList.remove('hidden')
+    } else {
+      roomStatus.textContent = 'Not in a room'
+      roomCodeDisplay.classList.add('hidden')
+      currentRoomCode = null
+      localStorage.removeItem('soundsync_room_code')
+    }
+
     // Update network display
     let networkDisplay = 'Network: '
 
@@ -839,11 +871,59 @@ document.addEventListener('DOMContentLoaded', () => {
     networkIdElement.textContent = networkDisplay
     networkUsersElement.textContent = data.userCount || 1
 
-    // Show a friendly message based on the network
+    // Show a friendly message based on the network/room
     if (data.networkId === 'local-development') {
       networkIdElement.innerHTML +=
         ' <span class="same-network">(Local testing)</span>'
+    } else if (data.roomCode) {
+      networkIdElement.innerHTML +=
+        ' <span class="same-network">(In Room)</span>'
     }
+
+    // Room creation response
+    socket.on('room-created', (data) => {
+      if (data.roomCode) {
+        currentRoomCode = data.roomCode
+        localStorage.setItem('soundsync_room_code', currentRoomCode)
+
+        roomStatus.textContent = `Room created:`
+        roomCodeDisplay.textContent = currentRoomCode
+        roomCodeDisplay.classList.remove('hidden')
+
+        // Update host status
+        if (data.isHost) {
+          isHost = true
+          localStorage.setItem('soundsync_was_host', 'true')
+          roleStatus.textContent = 'Role: Host'
+          hostControls.classList.remove('hidden')
+          clientMessage.classList.add('hidden')
+        }
+
+        connectionStatus.textContent = 'Connected'
+      }
+    })
+
+    // Room join response
+    socket.on('room-join-result', (data) => {
+      if (data.success) {
+        currentRoomCode = data.roomCode
+        localStorage.setItem('soundsync_room_code', currentRoomCode)
+
+        roomStatus.textContent = `Joined room:`
+        roomCodeDisplay.textContent = currentRoomCode
+        roomCodeDisplay.classList.remove('hidden')
+
+        // Reset host status
+        isHost = false
+        localStorage.setItem('soundsync_was_host', 'false')
+
+        connectionStatus.textContent = 'Connected'
+        roomCodeInput.value = ''
+      } else {
+        alert(`Failed to join room: ${data.error || 'Room not found'}`)
+        connectionStatus.textContent = 'Connected'
+      }
+    })
   })
 
   // Users list update received
@@ -2154,6 +2234,32 @@ document.addEventListener('DOMContentLoaded', () => {
           2
         )}s`
       )
+    }
+  })
+
+  // Create room button click handler
+  createRoomBtn.addEventListener('click', () => {
+    connectionStatus.textContent = 'Creating room...'
+    socket.emit('create-room')
+  })
+
+  // Join room button click handler
+  joinRoomBtn.addEventListener('click', () => {
+    const roomCode = roomCodeInput.value.trim().toUpperCase()
+
+    if (!roomCode) {
+      alert('Please enter a room code')
+      return
+    }
+
+    connectionStatus.textContent = 'Joining room...'
+    socket.emit('join-room', { roomCode })
+  })
+
+  // Allow entering on input field
+  roomCodeInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+      joinRoomBtn.click()
     }
   })
 })

@@ -19,13 +19,22 @@ if (!fs.existsSync(uploadsDir)) {
 }
 
 // Track users by session ID instead of socket ID
-const users = new Map() // Map sessionId -> { socketId, isHost, latency, ip, networkId }
+const users = new Map() // Map sessionId -> { socketId, isHost, latency, ip, networkId, roomCode }
 let currentHost = null // Store the session ID of the current host
 
-// Track network groups - map of networkId -> Set of sessionIds
+// Track room groups - map of roomCode -> Set of sessionIds
+const rooms = new Map()
+
+// Track network groups - map of networkId -> Set of sessionIds (kept for backward compatibility)
 const networks = new Map()
 
-// Generate a network ID from IP address
+// Generate a random room code
+function generateRoomCode() {
+  // Generate a 6-character alphanumeric code
+  return Math.random().toString(36).substring(2, 8).toUpperCase()
+}
+
+// Generate a network ID from IP address (kept for backward compatibility)
 function getNetworkId(ip) {
   // For local development, special case for localhost and local IPs
   if (
@@ -184,14 +193,19 @@ app.post('/upload', (req, res) => {
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   // Get the session ID from auth
-  const { sessionId, wasHost } = socket.handshake.auth
+  const { sessionId, wasHost, roomCode: joinRoom } = socket.handshake.auth
 
   // Get client IP address
   const ip = socket.handshake.address.replace('::ffff:', '') // Remove IPv6 prefix for IPv4 addresses
   const networkId = getNetworkId(ip)
 
+  // For hosted version, prioritize room code over network ID
+  let userRoomCode = joinRoom || null
+
   console.log(
-    `User connected: ${sessionId} (socket: ${socket.id}, IP: ${ip}, Network: ${networkId})`
+    `User connected: ${sessionId} (socket: ${
+      socket.id
+    }, IP: ${ip}, Network: ${networkId}, Room: ${userRoomCode || 'None'})`
   )
 
   // Start measuring latency right away
@@ -224,7 +238,33 @@ io.on('connection', (socket) => {
     // Update the existing user's socket ID and network info
     console.log(`Reconnected user with session: ${sessionId}`)
 
-    // If network changed, update network membership
+    // If user is rejoining with a room code, prioritize that
+    if (userRoomCode) {
+      // Remove from old room if they had one
+      if (existingUser.roomCode) {
+        const oldRoom = rooms.get(existingUser.roomCode)
+        if (oldRoom) {
+          oldRoom.delete(sessionId)
+          // Clean up empty rooms
+          if (oldRoom.size === 0) {
+            rooms.delete(existingUser.roomCode)
+          }
+        }
+      }
+
+      // Add to new room
+      let room = rooms.get(userRoomCode)
+      if (!room) {
+        room = new Set()
+        rooms.set(userRoomCode, room)
+      }
+      room.add(sessionId)
+
+      // Update user's room code
+      existingUser.roomCode = userRoomCode
+    }
+
+    // For backward compatibility, also maintain network groups
     if (existingUser.networkId && existingUser.networkId !== networkId) {
       // Remove from old network
       const oldNetwork = networks.get(existingUser.networkId)
@@ -250,22 +290,38 @@ io.on('connection', (socket) => {
     existingUser.networkId = networkId
     users.set(sessionId, existingUser)
 
-    // Send network information to client
+    // Send network/room information to client
     socket.emit('network-info', {
       networkId,
-      userCount: networks.get(networkId)?.size || 1,
+      roomCode: existingUser.roomCode,
+      userCount: existingUser.roomCode
+        ? rooms.get(existingUser.roomCode)?.size || 1
+        : networks.get(networkId)?.size || 1,
     })
   } else {
     // This is a new user
-    users.set(sessionId, {
+    const userData = {
       socketId: socket.id,
       isHost: false,
       latency: 0,
       ip,
       networkId,
-    })
+      roomCode: userRoomCode,
+    }
 
-    // Add to network group
+    users.set(sessionId, userData)
+
+    // Add to room group if they have a room code
+    if (userRoomCode) {
+      let room = rooms.get(userRoomCode)
+      if (!room) {
+        room = new Set()
+        rooms.set(userRoomCode, room)
+      }
+      room.add(sessionId)
+    }
+
+    // For backward compatibility, also add to network group
     let network = networks.get(networkId)
     if (!network) {
       network = new Set()
@@ -273,50 +329,63 @@ io.on('connection', (socket) => {
     }
     network.add(sessionId)
 
-    // Send network information to client
+    // Send network/room information to client
     socket.emit('network-info', {
       networkId,
-      userCount: networks.get(networkId)?.size || 1,
+      roomCode: userRoomCode,
+      userCount: userRoomCode
+        ? rooms.get(userRoomCode)?.size || 1
+        : networks.get(networkId)?.size || 1,
     })
   }
 
-  // Handle host assignment per network
+  // Handle host assignment per room/network
   let isHost = false
 
-  // Check if this network already has a host
-  const networkUsers = networks.get(networkId)
-  let networkHasHost = false
+  // Determine which group to use (room or network)
+  const userGroup =
+    existingUser?.roomCode || userRoomCode
+      ? rooms.get(existingUser?.roomCode || userRoomCode)
+      : networks.get(networkId)
 
-  if (networkUsers) {
-    for (const userId of networkUsers) {
+  let groupHasHost = false
+
+  if (userGroup) {
+    for (const userId of userGroup) {
       if (userId !== sessionId) {
         // Skip current user
         const user = users.get(userId)
         if (user && user.isHost) {
-          networkHasHost = true
+          groupHasHost = true
           break
         }
       }
     }
   }
 
-  // If we don't have a host for this network, assign one
-  if (!networkHasHost) {
+  // If we don't have a host for this group, assign one
+  if (!groupHasHost) {
     // If this user was previously a host, make them host again
     if (wasHost) {
       currentHost = sessionId
       users.get(sessionId).isHost = true
       isHost = true
       console.log(
-        `Restored host status to user: ${sessionId} (Network: ${networkId})`
+        `Restored host status to user: ${sessionId} (${
+          userRoomCode ? 'Room: ' + userRoomCode : 'Network: ' + networkId
+        })`
       )
     }
-    // Otherwise, make the first user in the network a host
-    else if (networkUsers && networkUsers.size === 1) {
+    // Otherwise, make the first user in the group a host
+    else if (userGroup && userGroup.size === 1) {
       currentHost = sessionId
       users.get(sessionId).isHost = true
       isHost = true
-      console.log(`Assigned new host: ${sessionId} (Network: ${networkId})`)
+      console.log(
+        `Assigned new host: ${sessionId} (${
+          userRoomCode ? 'Room: ' + userRoomCode : 'Network: ' + networkId
+        })`
+      )
     }
   }
   // If this session is the current host, restore their host status
@@ -329,8 +398,120 @@ io.on('connection', (socket) => {
   // Inform the client whether they are the host
   socket.emit('host-status', { isHost })
 
-  // Send updated user list to everyone in the same network
-  updateUsersInNetwork(networkId)
+  // Send updated user list to everyone in the same group
+  const userGroup2 =
+    existingUser?.roomCode || userRoomCode
+      ? existingUser?.roomCode || userRoomCode
+      : networkId
+  updateUsersInGroup(userGroup2)
+
+  // Generate room
+  socket.on('create-room', () => {
+    const user = users.get(sessionId)
+    if (!user) return
+
+    // Generate a room code
+    const newRoomCode = generateRoomCode()
+
+    // Remove from old room if any
+    if (user.roomCode) {
+      const oldRoom = rooms.get(user.roomCode)
+      if (oldRoom) {
+        oldRoom.delete(sessionId)
+        if (oldRoom.size === 0) {
+          rooms.delete(user.roomCode)
+        }
+      }
+    }
+
+    // Create and add to new room
+    const newRoom = new Set([sessionId])
+    rooms.set(newRoomCode, newRoom)
+
+    // Update user data
+    user.roomCode = newRoomCode
+    users.set(sessionId, user)
+
+    // Make this user the host of their room
+    user.isHost = true
+    currentHost = sessionId
+
+    // Send room info to client
+    socket.emit('room-created', {
+      roomCode: newRoomCode,
+      isHost: true,
+    })
+
+    // Update network info
+    socket.emit('network-info', {
+      networkId: user.networkId,
+      roomCode: newRoomCode,
+      userCount: 1,
+    })
+
+    console.log(`User ${sessionId} created room ${newRoomCode}`)
+  })
+
+  // Join room
+  socket.on('join-room', (data) => {
+    const roomCode = data.roomCode.toUpperCase()
+    const user = users.get(sessionId)
+
+    if (!user) return
+
+    // Check if room exists
+    if (!rooms.has(roomCode)) {
+      socket.emit('room-join-result', {
+        success: false,
+        error: 'Room not found',
+      })
+      return
+    }
+
+    // Remove from old room if any
+    if (user.roomCode) {
+      const oldRoom = rooms.get(user.roomCode)
+      if (oldRoom) {
+        oldRoom.delete(sessionId)
+        if (oldRoom.size === 0) {
+          rooms.delete(user.roomCode)
+        } else {
+          // Update the user list for everyone in the old room
+          updateUsersInGroup(user.roomCode)
+        }
+      }
+    }
+
+    // Add to new room
+    const room = rooms.get(roomCode)
+    room.add(sessionId)
+
+    // Update user data
+    user.roomCode = roomCode
+    user.isHost = false // Not a host when joining
+    users.set(sessionId, user)
+
+    // Send success response
+    socket.emit('room-join-result', {
+      success: true,
+      roomCode: roomCode,
+    })
+
+    // Update network info
+    socket.emit('network-info', {
+      networkId: user.networkId,
+      roomCode: roomCode,
+      userCount: room.size,
+    })
+
+    // Update host status
+    socket.emit('host-status', { isHost: false })
+
+    // Update user list for everyone in the room
+    updateUsersInGroup(roomCode)
+
+    console.log(`User ${sessionId} joined room ${roomCode}`)
+  })
 
   // Handle audio control events from host
   socket.on('audio-control', (data) => {
@@ -342,8 +523,9 @@ io.on('connection', (socket) => {
           data.fileName ? ' - File: ' + data.fileName : ''
         }`
       )
-      // Only broadcast to users in the same network
-      broadcastToNetwork(user.networkId, 'audio-control', data, sessionId)
+      // Broadcast to users in the same group (room or network)
+      const targetGroup = user.roomCode || user.networkId
+      broadcastToGroup(targetGroup, 'audio-control', data, sessionId)
     }
   })
 
@@ -410,7 +592,7 @@ io.on('connection', (socket) => {
     })
 
     // Update user list for everyone in the network
-    updateUsersInNetwork(currentUser.networkId)
+    updateUsersInGroup(currentUser.networkId)
 
     console.log(`Host transfer complete: ${newHostId} is now the host`)
   })
@@ -459,7 +641,7 @@ io.on('connection', (socket) => {
     if (user && user.isHost) {
       console.log(`Host started YouTube sync for video: ${data.videoId}`)
       // Broadcast to all clients in the same network
-      broadcastToNetwork(user.networkId, 'youtube-sync', data, sessionId)
+      broadcastToGroup(user.networkId, 'youtube-sync', data, sessionId)
     }
   })
 
@@ -498,12 +680,7 @@ io.on('connection', (socket) => {
     if (user && user.isHost) {
       console.log(`Host changed YouTube state: ${data.state}`)
       // Broadcast to clients in the same network
-      broadcastToNetwork(
-        user.networkId,
-        'youtube-state-change',
-        data,
-        sessionId
-      )
+      broadcastToGroup(user.networkId, 'youtube-state-change', data, sessionId)
     }
   })
 
@@ -514,7 +691,7 @@ io.on('connection', (socket) => {
     if (user && user.isHost) {
       console.log('Host closed YouTube player')
       // Broadcast to clients in the same network
-      broadcastToNetwork(user.networkId, 'youtube-close', {}, sessionId)
+      broadcastToGroup(user.networkId, 'youtube-close', {}, sessionId)
     }
   })
 
@@ -526,7 +703,7 @@ io.on('connection', (socket) => {
         `Host started tab audio stream: ${data.description || 'Unknown source'}`
       )
       // Let clients know to prepare for streaming audio
-      broadcastToNetwork(
+      broadcastToGroup(
         user.networkId,
         'tab-stream-start',
         {
@@ -544,7 +721,7 @@ io.on('connection', (socket) => {
     const user = users.get(sessionId)
     if (user && user.isHost) {
       console.log('Host stopped tab audio stream')
-      broadcastToNetwork(user.networkId, 'tab-stream-stop', {}, sessionId)
+      broadcastToGroup(user.networkId, 'tab-stream-stop', {}, sessionId)
     }
   })
 
@@ -566,7 +743,7 @@ io.on('connection', (socket) => {
       const messageAge =
         serverTimestamp - (data.clientTimestamp || serverTimestamp)
 
-      // Only send to clients in the same network with their specific latency adjustment
+      // Only send to clients in the same group with their specific latency adjustment
       for (const clientId of networks.get(user.networkId) || []) {
         // Skip the host
         if (clientId === sessionId) continue
@@ -602,7 +779,7 @@ io.on('connection', (socket) => {
     const user = users.get(sessionId)
     if (!user) return
 
-    const userNetworkId = user.networkId
+    const userGroupId = user.roomCode || user.networkId
 
     // We don't immediately remove the user from our Map
     // This allows them to reconnect with the same session ID
@@ -615,22 +792,29 @@ io.on('connection', (socket) => {
         const updatedUser = users.get(sessionId)
         if (updatedUser && updatedUser.socketId === socket.id) {
           console.log(
-            `Host ${sessionId} did not reconnect, selecting new host for network ${userNetworkId}`
+            `Host ${sessionId} did not reconnect, selecting new host for group ${userGroupId}`
           )
 
-          // If the host didn't reconnect, select a new host for that network
+          // If the host didn't reconnect, select a new host for that group
           // Remove the disconnected host
           users.delete(sessionId)
 
-          // Remove from network group
-          const network = networks.get(userNetworkId)
-          if (network) {
-            network.delete(sessionId)
-            if (network.size === 0) {
-              networks.delete(userNetworkId)
+          // Get the correct group (room or network)
+          const group = user.roomCode
+            ? rooms.get(user.roomCode)
+            : networks.get(user.networkId)
+
+          if (group) {
+            group.delete(sessionId)
+            if (group.size === 0) {
+              if (user.roomCode) {
+                rooms.delete(user.roomCode)
+              } else {
+                networks.delete(user.networkId)
+              }
             } else {
-              // Find a new host from remaining users in the same network
-              const [newHostId] = network
+              // Find a new host from remaining users in the same group
+              const [newHostId] = group
               if (newHostId) {
                 const newHost = users.get(newHostId)
                 if (newHost) {
@@ -641,11 +825,11 @@ io.on('connection', (socket) => {
                   const newHostSocketId = newHost.socketId
                   io.to(newHostSocketId).emit('host-status', { isHost: true })
                   console.log(
-                    `New host selected for network ${userNetworkId}: ${newHostId}`
+                    `New host selected for group ${userGroupId}: ${newHostId}`
                   )
 
-                  // Update everyone in the network
-                  updateUsersInNetwork(userNetworkId)
+                  // Update everyone in the group
+                  updateUsersInGroup(userGroupId)
                 }
               }
             }
@@ -660,15 +844,22 @@ io.on('connection', (socket) => {
           // User didn't reconnect within the timeout
           users.delete(sessionId)
 
-          // Remove from network
-          const network = networks.get(userNetworkId)
-          if (network) {
-            network.delete(sessionId)
-            if (network.size === 0) {
-              networks.delete(userNetworkId)
+          // Remove from the appropriate group
+          const group = user.roomCode
+            ? rooms.get(user.roomCode)
+            : networks.get(user.networkId)
+
+          if (group) {
+            group.delete(sessionId)
+            if (group.size === 0) {
+              if (user.roomCode) {
+                rooms.delete(user.roomCode)
+              } else {
+                networks.delete(user.networkId)
+              }
             } else {
-              // Update the user list for everyone in the network
-              updateUsersInNetwork(userNetworkId)
+              // Update the user list for everyone in the group
+              updateUsersInGroup(userGroupId)
             }
           }
         }
@@ -676,12 +867,15 @@ io.on('connection', (socket) => {
     }
   })
 
-  // Helper function to broadcast to all users in the same network
-  function broadcastToNetwork(networkId, event, data, excludeSessionId = null) {
-    const network = networks.get(networkId)
-    if (!network) return
+  // Helper function to broadcast to all users in the same group (room or network)
+  function broadcastToGroup(groupId, event, data, excludeSessionId = null) {
+    // Determine if groupId is a room code or network ID
+    const isRoomCode = rooms.has(groupId)
+    const group = isRoomCode ? rooms.get(groupId) : networks.get(groupId)
 
-    for (const userId of network) {
+    if (!group) return
+
+    for (const userId of group) {
       if (excludeSessionId && userId === excludeSessionId) continue
 
       const user = users.get(userId)
@@ -694,13 +888,16 @@ io.on('connection', (socket) => {
     }
   }
 
-  // Helper function to update the user list for everyone in a network
-  function updateUsersInNetwork(networkId) {
-    const network = networks.get(networkId)
-    if (!network) return
+  // Helper function to update the user list for everyone in a group
+  function updateUsersInGroup(groupId) {
+    // Determine if groupId is a room code or network ID
+    const isRoomCode = rooms.has(groupId)
+    const group = isRoomCode ? rooms.get(groupId) : networks.get(groupId)
 
-    // Create user list with network info
-    const usersList = Array.from(network)
+    if (!group) return
+
+    // Create user list with group info
+    const usersList = Array.from(group)
       .map((userId) => {
         const user = users.get(userId)
         if (!user) return null
@@ -714,10 +911,10 @@ io.on('connection', (socket) => {
       })
       .filter(Boolean) // Remove null entries
 
-    // Send updated list to everyone in the network
-    broadcastToNetwork(networkId, 'users-update', {
+    // Send updated list to everyone in the group
+    broadcastToGroup(groupId, 'users-update', {
       users: usersList,
-      networkId,
+      groupId: groupId,
       sameNetwork: true,
     })
   }

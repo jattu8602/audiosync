@@ -30,6 +30,33 @@
         </div>
       </div>
 
+      <!-- Room Management UI -->
+      <div id="room-management" class="room-management">
+        <div class="room-controls">
+          <h3>Room Controls</h3>
+          <div id="current-room">
+            <p id="room-status">Not in a room</p>
+            <p id="room-code" class="room-code hidden"></p>
+          </div>
+          <div id="room-actions">
+            <button id="create-room-btn" class="primary-button">
+              Create Room
+            </button>
+            <div class="join-form">
+              <input
+                type="text"
+                id="room-code-input"
+                placeholder="Enter room code"
+                maxlength="6"
+              />
+              <button id="join-room-btn" class="secondary-button">
+                Join Room
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="audio-container">
         <div id="host-controls" class="hidden">
           <h2>You are the Host</h2>
