@@ -22,6 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const createRoomBtn = document.getElementById('create-room-btn')
   const joinRoomBtn = document.getElementById('join-room-btn')
   const roomCodeInput = document.getElementById('room-code-input')
+  const shareCodeBtn = document.getElementById('share-code-btn')
 
   // Tab streaming controls
   const streamTabButton = document.getElementById('stream-tab-audio')
@@ -845,9 +846,11 @@ document.addEventListener('DOMContentLoaded', () => {
       roomStatus.textContent = `In room:`
       roomCodeDisplay.textContent = currentRoomCode
       roomCodeDisplay.classList.remove('hidden')
+      shareCodeBtn.classList.remove('hidden')
     } else {
       roomStatus.textContent = 'Not in a room'
       roomCodeDisplay.classList.add('hidden')
+      shareCodeBtn.classList.add('hidden')
       currentRoomCode = null
       localStorage.removeItem('soundsync_room_code')
     }
@@ -889,6 +892,7 @@ document.addEventListener('DOMContentLoaded', () => {
         roomStatus.textContent = `Room created:`
         roomCodeDisplay.textContent = currentRoomCode
         roomCodeDisplay.classList.remove('hidden')
+        shareCodeBtn.classList.remove('hidden')
 
         // Update host status
         if (data.isHost) {
@@ -912,6 +916,7 @@ document.addEventListener('DOMContentLoaded', () => {
         roomStatus.textContent = `Joined room:`
         roomCodeDisplay.textContent = currentRoomCode
         roomCodeDisplay.classList.remove('hidden')
+        shareCodeBtn.classList.remove('hidden')
 
         // Reset host status
         isHost = false
@@ -2260,6 +2265,47 @@ document.addEventListener('DOMContentLoaded', () => {
   roomCodeInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
       joinRoomBtn.click()
+    }
+  })
+
+  // Share code button click handler
+  shareCodeBtn.addEventListener('click', () => {
+    if (!currentRoomCode) return
+
+    // Try to use the Web Share API if available
+    if (navigator.share) {
+      navigator
+        .share({
+          title: 'Join my SoundSync room',
+          text: `Join my SoundSync room with code: ${currentRoomCode}`,
+          url: window.location.href,
+        })
+        .then(() => console.log('Shared successfully'))
+        .catch((err) => {
+          console.error('Share failed:', err)
+          fallbackCopyToClipboard()
+        })
+    } else {
+      // Fallback to clipboard
+      fallbackCopyToClipboard()
+    }
+
+    function fallbackCopyToClipboard() {
+      // Copy to clipboard
+      navigator.clipboard
+        .writeText(currentRoomCode)
+        .then(() => {
+          // Give user feedback
+          const originalText = shareCodeBtn.textContent
+          shareCodeBtn.textContent = 'Copied!'
+          setTimeout(() => {
+            shareCodeBtn.textContent = originalText
+          }, 2000)
+        })
+        .catch((err) => {
+          console.error('Could not copy text: ', err)
+          alert(`Your room code is: ${currentRoomCode}`)
+        })
     }
   })
 })

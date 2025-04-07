@@ -116,6 +116,16 @@ h3 {
   border: 1px dashed #3498db;
 }
 
+#share-code-btn {
+  display: block;
+  margin: 5px auto 15px;
+  background-color: #27ae60;
+}
+
+#share-code-btn:hover {
+  background-color: #219955;
+}
+
 #room-actions {
   display: flex;
   flex-direction: column;
