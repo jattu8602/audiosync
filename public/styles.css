@@ -47,13 +47,15 @@ h3 {
 
 /* Latency indicator styles */
 #latency-indicator {
-  font-size: 0.9rem;
+  font-size: 1rem;
   font-weight: bold;
   border-radius: 4px;
-  padding: 2px 8px;
+  padding: 3px 10px;
   display: flex;
   align-items: center;
+  justify-content: center;
   transition: background-color 0.3s, color 0.3s;
+  min-width: 60px;
 }
 
 .latency-unknown {
@@ -78,7 +80,6 @@ h3 {
 
 #latency-value {
   font-family: monospace;
-  margin-right: 2px;
 }
 
 /* Network information */

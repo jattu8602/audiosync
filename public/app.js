@@ -2517,7 +2517,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Update latency indicator with the current value
   function updateLatencyIndicator(latency) {
     // Update the latency value display
-    latencyValue.textContent = Math.round(latency)
+    latencyValue.textContent = Math.round(latency) + 'ms'
 
     // Remove all existing classes
     latencyIndicator.classList.remove(
