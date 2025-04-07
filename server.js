@@ -73,6 +73,17 @@ function getNetworkId(ip) {
   return 'unknown-' + ip
 }
 
+// Helper to get the last part of an IP address
+function getLastPart(ip) {
+  if (ip.includes('.')) {
+    return ip.split('.').pop()
+  }
+  if (ip.includes(':')) {
+    return ip.split(':').pop()
+  }
+  return ip
+}
+
 // Middleware for parsing JSON and urlencoded form data
 app.use(express.json({ limit: '20mb' }))
 app.use(express.urlencoded({ extended: true, limit: '20mb' }))
@@ -1081,17 +1092,6 @@ io.on('connection', (socket) => {
       groupId: groupId,
       sameNetwork: true,
     })
-  }
-
-  // Helper to get the last part of an IP address
-  function getLastPart(ip) {
-    if (ip.includes('.')) {
-      return ip.split('.').pop()
-    }
-    if (ip.includes(':')) {
-      return ip.split(':').pop()
-    }
-    return ip
   }
 })
 
