@@ -222,45 +222,6 @@ app.post('/upload', (req, res) => {
   }
 })
 
-// Helper function to handle audio control
-function handleAudioControl(socket, data) {
-  const sessionId = socket.handshake.auth.sessionId
-  const user = users.get(sessionId)
-
-  // Only the host can control the audio
-  if (user && user.isHost) {
-    console.log(
-      `Host sent audio control: ${data.action}${
-        data.fileName ? ' - File: ' + data.fileName : ''
-      }`
-    )
-
-    // Get recipients
-    const recipients = getRecipientsForUser(user)
-
-    // Forward to all recipients (except sender)
-    recipients.forEach((recipientId) => {
-      if (recipientId !== sessionId) {
-        const recipientSocketId = users.get(recipientId)?.socketId
-        if (recipientSocketId) {
-          io.to(recipientSocketId).emit('audio-control', data)
-        }
-      }
-    })
-  }
-}
-
-// Helper function to get appropriate recipients for a user
-function getRecipientsForUser(user) {
-  // If user is in a room, get room users
-  if (user.roomCode) {
-    return Array.from(rooms.get(user.roomCode) || [])
-  }
-
-  // Otherwise use network users
-  return Array.from(networks.get(user.networkId) || [])
-}
-
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   // Get the session ID from auth
@@ -745,83 +706,20 @@ io.on('connection', (socket) => {
     )
   })
 
-  // Handle audio control messages
+  // Handle audio control events from host
   socket.on('audio-control', (data) => {
-    handleAudioControl(socket, data)
-  })
-
-  // Handle YouTube stream start
-  socket.on('youtube-stream-start', (data) => {
     const user = users.get(sessionId)
-    if (!user || !user.isHost) {
-      console.log(`Non-host user ${sessionId} tried to start YouTube stream`)
-      return
+    // Only the host can control the audio
+    if (user && user.isHost) {
+      console.log(
+        `Host sent audio control: ${data.action}${
+          data.fileName ? ' - File: ' + data.fileName : ''
+        }`
+      )
+      // Broadcast to users in the same group (room or network)
+      const targetGroup = user.roomCode || user.networkId
+      broadcastToGroup(targetGroup, 'audio-control', data, sessionId)
     }
-
-    // Get network or room users
-    const recipients = getRecipientsForUser(user)
-
-    console.log(
-      `Host ${sessionId} started YouTube stream, video ID: ${data.videoId}`
-    )
-
-    // Forward to all recipients (except sender)
-    recipients.forEach((recipientId) => {
-      if (recipientId !== sessionId) {
-        const recipientSocketId = users.get(recipientId)?.socketId
-        if (recipientSocketId) {
-          io.to(recipientSocketId).emit('youtube-stream-start', data)
-        }
-      }
-    })
-  })
-
-  // Handle YouTube control commands
-  socket.on('youtube-control', (data) => {
-    const user = users.get(sessionId)
-    if (!user || !user.isHost) {
-      console.log(`Non-host user ${sessionId} tried to control YouTube`)
-      return
-    }
-
-    // Get network or room users
-    const recipients = getRecipientsForUser(user)
-
-    // Forward to all recipients (except sender)
-    recipients.forEach((recipientId) => {
-      if (recipientId !== sessionId) {
-        const recipientSocketId = users.get(recipientId)?.socketId
-        if (recipientSocketId) {
-          io.to(recipientSocketId).emit('youtube-control', data)
-        }
-      }
-    })
-  })
-
-  // Handle YouTube sync (fallback method)
-  socket.on('youtube-sync', (data) => {
-    const user = users.get(sessionId)
-    if (!user || !user.isHost) {
-      console.log(`Non-host user ${sessionId} tried to sync YouTube`)
-      return
-    }
-
-    // Get network or room users
-    const recipients = getRecipientsForUser(user)
-
-    console.log(
-      `Host ${sessionId} sent YouTube sync, video ID: ${data.videoId}`
-    )
-
-    // Forward to all recipients (except sender)
-    recipients.forEach((recipientId) => {
-      if (recipientId !== sessionId) {
-        const recipientSocketId = users.get(recipientId)?.socketId
-        if (recipientSocketId) {
-          io.to(recipientSocketId).emit('youtube-sync', data)
-        }
-      }
-    })
   })
 
   // Handle host transfer request
@@ -892,7 +790,135 @@ io.on('connection', (socket) => {
     console.log(`Host transfer complete: ${newHostId} is now the host`)
   })
 
-  // Handle audio time updates
+  // Handle live audio streaming data
+  socket.on('audio-stream', (data) => {
+    const user = users.get(sessionId)
+    // Only the host can stream audio
+    if (user && user.isHost) {
+      // Set high priority for audio data packets
+      const options = { priority: 'high' }
+
+      // Broadcast audio chunk to all clients in the same network
+      const network = networks.get(user.networkId)
+      if (!network) return
+
+      // Track any delays for monitoring
+      const serverTimestamp = Date.now()
+      const audioData = {
+        ...data,
+        serverTimestamp,
+        serverDelay: serverTimestamp - data.timestamp,
+      }
+
+      // Broadcast to clients with urgency
+      for (const userId of network) {
+        // Skip the host
+        if (userId === sessionId) continue
+
+        const clientUser = users.get(userId)
+        if (!clientUser) continue
+
+        const clientSocket = io.sockets.sockets.get(clientUser.socketId)
+        if (clientSocket && clientSocket.connected) {
+          // Emit with high priority
+          clientSocket.emit('audio-stream', audioData, options)
+        }
+      }
+    }
+  })
+
+  // Handle YouTube synchronization
+  socket.on('youtube-sync', (data) => {
+    const user = users.get(sessionId)
+    // Only the host can initiate YouTube sync
+    if (user && user.isHost) {
+      console.log(`Host started YouTube sync for video: ${data.videoId}`)
+      // Broadcast to all clients in the same network
+      broadcastToGroup(user.networkId, 'youtube-sync', data, sessionId)
+    }
+  })
+
+  // Handle YouTube time updates
+  socket.on('youtube-time-update', (data) => {
+    const user = users.get(sessionId)
+    // Only the host can send time updates
+    if (user && user.isHost) {
+      // Add server timestamp for more precise calculation
+      const serverTimestamp = Date.now()
+      const enhancedData = {
+        ...data,
+        serverTimestamp,
+      }
+
+      // Broadcast to clients in the same network
+      for (const clientId of networks.get(user.networkId) || []) {
+        // Skip the host
+        if (clientId === sessionId) continue
+
+        const clientData = users.get(clientId)
+        if (!clientData) continue
+
+        const clientSocket = io.sockets.sockets.get(clientData.socketId)
+        if (clientSocket && clientSocket.connected) {
+          clientSocket.emit('youtube-time-update', enhancedData)
+        }
+      }
+    }
+  })
+
+  // Handle YouTube state changes (play/pause)
+  socket.on('youtube-state-change', (data) => {
+    const user = users.get(sessionId)
+    // Only the host can control playback state
+    if (user && user.isHost) {
+      console.log(`Host changed YouTube state: ${data.state}`)
+      // Broadcast to clients in the same network
+      broadcastToGroup(user.networkId, 'youtube-state-change', data, sessionId)
+    }
+  })
+
+  // Handle YouTube player close
+  socket.on('youtube-close', () => {
+    const user = users.get(sessionId)
+    // Only the host can close the YouTube player
+    if (user && user.isHost) {
+      console.log('Host closed YouTube player')
+      // Broadcast to clients in the same network
+      broadcastToGroup(user.networkId, 'youtube-close', {}, sessionId)
+    }
+  })
+
+  // Host is starting a tab audio stream
+  socket.on('tab-stream-start', (data) => {
+    const user = users.get(sessionId)
+    if (user && user.isHost) {
+      console.log(
+        `Host started tab audio stream: ${data.description || 'Unknown source'}`
+      )
+      // Let clients know to prepare for streaming audio
+      broadcastToGroup(
+        user.networkId,
+        'tab-stream-start',
+        {
+          description: data.description,
+          sampleRate: data.sampleRate,
+          channelCount: data.channelCount,
+        },
+        sessionId
+      )
+    }
+  })
+
+  // Host is stopping a tab audio stream
+  socket.on('tab-stream-stop', () => {
+    const user = users.get(sessionId)
+    if (user && user.isHost) {
+      console.log('Host stopped tab audio stream')
+      broadcastToGroup(user.networkId, 'tab-stream-stop', {}, sessionId)
+    }
+  })
+
+  // When host sends audio time update
   socket.on('audio-time-update', (data) => {
     const user = users.get(sessionId)
     if (user && user.isHost) {

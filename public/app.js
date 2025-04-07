@@ -1448,7 +1448,7 @@ document.addEventListener('DOMContentLoaded', () => {
   streamTabButton.addEventListener('click', startTabAudioStream)
   stopStreamingButton.addEventListener('click', stopTabAudioStream)
 
-  // YouTube Integration
+  // Add YouTube sync controls
   const youtubeUrlInput = document.createElement('input')
   youtubeUrlInput.type = 'text'
   youtubeUrlInput.placeholder = 'Enter YouTube URL'
@@ -1478,11 +1478,397 @@ document.addEventListener('DOMContentLoaded', () => {
   let youtubePlayer = null
   let isYoutubeReady = false
   let youtubeSyncing = false
-  let youtubeVideoId = null
-  let isStreamingYouTube = false
 
-  // Enhanced YouTube streaming mode - more efficient than separate YouTube loads
-  syncYoutubeButton.addEventListener('click', () => {
+  // Load YouTube API
+  function loadYouTubeAPI() {
+    if (window.YT) return Promise.resolve() // Already loaded
+
+    return new Promise((resolve) => {
+      // Create script tag
+      const tag = document.createElement('script')
+      tag.src = 'https://www.youtube.com/iframe_api'
+      const firstScriptTag = document.getElementsByTagName('script')[0]
+      firstScriptTag.parentNode.insertBefore(tag, firstScriptTag)
+
+      // When API is ready
+      window.onYouTubeIframeAPIReady = function () {
+        console.log('YouTube API loaded')
+        isYoutubeReady = true
+        resolve()
+      }
+    })
+  }
+
+  // Initialize YouTube player
+  function initYouTubePlayer(videoId, startTime = 0, startMuted = false) {
+    return new Promise((resolve, reject) => {
+      if (!isYoutubeReady) {
+        reject(new Error('YouTube API not ready'))
+        return
+      }
+
+      // Create player container if needed
+      let playerDiv = document.getElementById('youtube-player')
+      if (!playerDiv) {
+        playerDiv = document.createElement('div')
+        playerDiv.id = 'youtube-player'
+        youtubeContainer.appendChild(playerDiv)
+      }
+
+      // If player exists, destroy it
+      if (youtubePlayer) {
+        youtubePlayer.destroy()
+      }
+
+      // Track last time we received a sync update
+      window.lastYouTubeSyncData = {
+        localTimestamp: Date.now(),
+        hostTime: startTime,
+        predictedTime: startTime,
+      }
+
+      // Create new player with updated options
+      youtubePlayer = new YT.Player('youtube-player', {
+        height: '360',
+        width: '640',
+        videoId: videoId,
+        playerVars: {
+          start: Math.floor(startTime),
+          autoplay: 1,
+          mute: startMuted ? 1 : 0, // Start muted if requested (for clients to bypass autoplay)
+          controls: isHost ? 1 : 0, // Only host can control
+          rel: 0,
+          fs: 1,
+          modestbranding: 1,
+          playsinline: 1, // Important for mobile autoplay
+        },
+        events: {
+          onReady: (event) => {
+            console.log('YouTube player ready')
+            youtubeContainer.classList.remove('hidden')
+
+            // Hide audio player when YouTube is active
+            playerContainer.classList.add('hidden')
+
+            // Ensure video plays (sometimes needed for client autoplay)
+            event.target.playVideo()
+
+            if (isHost) {
+              // Start sending sync updates for YouTube
+              startYouTubeSyncing()
+            } else {
+              // Disable controls for clients
+              event.target.getIframe().style.pointerEvents = 'none'
+
+              // Add overlay explanation
+              const controlsLockedMsg = document.createElement('div')
+              controlsLockedMsg.className = 'controls-locked youtube-locked'
+              controlsLockedMsg.textContent = 'Playback controlled by host'
+              youtubeContainer.appendChild(controlsLockedMsg)
+
+              // Start predictive sync for clients
+              if (!window.youtubePredictiveSync) {
+                startPredictiveYouTubeSync()
+              }
+            }
+
+            resolve(event.target)
+          },
+          onStateChange: (event) => {
+            // If video fails to play on client, try again
+            if (!isHost && event.data === YT.PlayerState.CUED) {
+              console.log('Video cued but not playing, trying to play...')
+              setTimeout(() => {
+                event.target.playVideo()
+              }, 500)
+            }
+
+            if (isHost) {
+              // When host changes state, tell clients
+              if (
+                event.data === YT.PlayerState.PLAYING ||
+                event.data === YT.PlayerState.PAUSED
+              ) {
+                socket.emit('youtube-state-change', {
+                  state: event.data,
+                  time: youtubePlayer.getCurrentTime(),
+                })
+              }
+            }
+          },
+          onError: (event) => {
+            console.error('YouTube player error:', event.data)
+            reject(new Error(`YouTube error code: ${event.data}`))
+          },
+        },
+      })
+    })
+  }
+
+  // Start predictive sync for YouTube (clients only)
+  function startPredictiveYouTubeSync() {
+    if (isHost || window.youtubePredictiveSync) return
+
+    // Run micro-adjustments every 100ms to stay in sync
+    window.youtubePredictiveSync = setInterval(() => {
+      if (
+        !youtubePlayer ||
+        youtubePlayer.getPlayerState() !== YT.PlayerState.PLAYING
+      )
+        return
+
+      const syncData = window.lastYouTubeSyncData
+      if (!syncData) return
+
+      // Calculate how much time has passed since our last sync
+      const timeSinceSync = (Date.now() - syncData.localTimestamp) / 1000
+
+      // Predict where the host should be now
+      const predictedHostTime = syncData.hostTime + timeSinceSync
+
+      // Get our current time
+      const currentTime = youtubePlayer.getCurrentTime()
+
+      // Calculate drift
+      const drift = currentTime - predictedHostTime
+      const absDrift = Math.abs(drift)
+
+      // Store this prediction for next time
+      syncData.predictedTime = predictedHostTime
+
+      // For tiny drifts, do nothing (avoid unnecessary adjustments)
+      if (absDrift < 0.1) return
+
+      // For small drifts, adjust playback rate subtly
+      if (absDrift < 0.5) {
+        // If we're ahead, slow down slightly; if behind, speed up slightly
+        const rate = drift > 0 ? 0.98 : 1.02
+        youtubePlayer.setPlaybackRate(rate)
+
+        // Log occasionally
+        if (Math.random() < 0.1) {
+          console.log(
+            `Predictive sync: Adjusting rate ${rate} for drift ${drift.toFixed(
+              3
+            )}s`
+          )
+        }
+
+        // Reset rate after a short time if we only need a brief correction
+        setTimeout(() => {
+          youtubePlayer.setPlaybackRate(1.0)
+        }, 800)
+      }
+      // For moderate drifts that are getting worse, do a smooth seek
+      else if (absDrift > 0.5 && absDrift < 2.0) {
+        // Only seek if timing is critical or randomly to avoid constant seeking
+        if (Math.random() < 0.2) {
+          console.log(
+            `Predictive sync: Seeking to fix drift of ${drift.toFixed(3)}s`
+          )
+          youtubePlayer.seekTo(predictedHostTime, true)
+        }
+      }
+      // For large drifts, seek immediately
+      else if (absDrift >= 2.0) {
+        console.log(
+          `Predictive sync: Emergency seek for drift of ${drift.toFixed(3)}s`
+        )
+        youtubePlayer.seekTo(predictedHostTime, true)
+      }
+    }, 100)
+
+    console.log('Started predictive YouTube sync')
+  }
+
+  // Stop predictive sync
+  function stopPredictiveYouTubeSync() {
+    if (window.youtubePredictiveSync) {
+      clearInterval(window.youtubePredictiveSync)
+      window.youtubePredictiveSync = null
+      console.log('Stopped predictive YouTube sync')
+    }
+  }
+
+  // Close YouTube player (for both host and clients)
+  function closeYouTubePlayer() {
+    if (youtubePlayer) {
+      youtubePlayer.stopVideo()
+      youtubePlayer.destroy()
+      youtubePlayer = null
+    }
+
+    youtubeContainer.classList.add('hidden')
+
+    // Remove any overlays
+    const overlays = youtubeContainer.querySelectorAll('.youtube-locked')
+    overlays.forEach((overlay) => overlay.remove())
+
+    // Show regular player again if we have audio
+    if (currentAudioSource) {
+      playerContainer.classList.remove('hidden')
+    }
+
+    // Stop syncing
+    stopYouTubeSyncing()
+    stopPredictiveYouTubeSync()
+  }
+
+  // Handle YouTube state change from host
+  socket.on('youtube-state-change', (data) => {
+    if (isHost || !youtubePlayer) return
+
+    console.log('YouTube state change:', data)
+
+    // Apply state change
+    if (data.state === YT.PlayerState.PLAYING) {
+      // Add network delay compensation
+      const networkDelay = 0.5 // 500ms default compensation
+      const targetTime = data.time + networkDelay
+
+      // First seek to correct position
+      youtubePlayer.seekTo(targetTime, true)
+
+      // Then ensure video is playing after the seek completes
+      setTimeout(() => {
+        youtubePlayer.playVideo()
+
+        // If currently muted, show the unmute button
+        if (youtubePlayer.isMuted && youtubePlayer.isMuted()) {
+          addUnmuteButton()
+        }
+      }, 200)
+    } else if (data.state === YT.PlayerState.PAUSED) {
+      youtubePlayer.pauseVideo()
+    }
+  })
+
+  // Send YouTube sync updates to clients
+  function startYouTubeSyncing() {
+    if (!isHost || !youtubePlayer || youtubeSyncing) return
+
+    youtubeSyncing = true
+
+    // Send updates more frequently (200ms instead of 500ms) for ultra-tight sync
+    const syncInterval = setInterval(() => {
+      if (!youtubePlayer || !youtubeSyncing) {
+        clearInterval(syncInterval)
+        return
+      }
+
+      const playerState = youtubePlayer.getPlayerState()
+      // Only send updates when playing
+      if (playerState === YT.PlayerState.PLAYING) {
+        socket.emit('youtube-time-update', {
+          time: youtubePlayer.getCurrentTime(),
+          timestamp: Date.now(),
+          rate: youtubePlayer.getPlaybackRate(),
+        })
+      }
+    }, 200) // Ultra-frequent updates for real-time sync
+
+    // Store interval for cleanup
+    window.youtubeSyncInterval = syncInterval
+  }
+
+  // Stop YouTube syncing
+  function stopYouTubeSyncing() {
+    youtubeSyncing = false
+    if (window.youtubeSyncInterval) {
+      clearInterval(window.youtubeSyncInterval)
+      window.youtubeSyncInterval = null
+    }
+  }
+
+  // Add a close button for YouTube
+  const closeYoutubeButton = document.createElement('button')
+  closeYoutubeButton.textContent = '×'
+  closeYoutubeButton.className = 'close-youtube'
+  closeYoutubeButton.title = 'Close YouTube player'
+  youtubeContainer.appendChild(closeYoutubeButton)
+
+  closeYoutubeButton.addEventListener('click', () => {
+    if (isHost) {
+      // Host broadcasts close to everyone
+      socket.emit('youtube-close')
+      closeYouTubePlayer()
+    }
+  })
+
+  // Client handlers for YouTube sync
+
+  // Receive YouTube sync from host
+  socket.on('youtube-sync', async (data) => {
+    if (isHost) return // Host doesn't need to receive their own sync
+
+    console.log('Received YouTube sync:', data)
+
+    try {
+      // Show YouTube is loading
+      clientStatus.textContent = 'Loading YouTube video...'
+
+      // Load YouTube API if needed
+      if (!isYoutubeReady) {
+        await loadYouTubeAPI()
+      }
+
+      // Initialize player with the video ID
+      // Start muted to bypass autoplay restrictions
+      await initYouTubePlayer(data.videoId, 0, true)
+
+      clientStatus.textContent = 'Playing YouTube video'
+
+      // Add unmute button for clients
+      addUnmuteButton()
+    } catch (error) {
+      console.error('Error playing YouTube:', error)
+      clientStatus.textContent = 'Error loading YouTube'
+    }
+  })
+
+  // Add unmute button for clients to bypass autoplay restrictions
+  function addUnmuteButton() {
+    // Only add if not already present
+    if (document.querySelector('.unmute-button')) return
+
+    const unmuteButton = document.createElement('button')
+    unmuteButton.textContent = '🔇 Click to Unmute'
+    unmuteButton.className = 'unmute-button'
+    unmuteButton.addEventListener('click', () => {
+      if (youtubePlayer) {
+        youtubePlayer.unMute()
+        youtubePlayer.setVolume(80) // Set to reasonable volume
+        unmuteButton.remove()
+      }
+    })
+
+    youtubeContainer.appendChild(unmuteButton)
+  }
+
+  // Extract YouTube video ID from URL
+  function getYouTubeVideoId(url) {
+    // Handle various YouTube URL formats
+    let videoId = null
+    const regexps = [
+      /youtube\.com\/watch\?v=([^&]+)/,
+      /youtube\.com\/embed\/([^?]+)/,
+      /youtube\.com\/v\/([^?]+)/,
+      /youtu\.be\/([^?]+)/,
+    ]
+
+    for (const regex of regexps) {
+      const match = url.match(regex)
+      if (match) {
+        videoId = match[1]
+        break
+      }
+    }
+
+    return videoId
+  }
+
+  // Sync YouTube button click handler
+  syncYoutubeButton.addEventListener('click', async () => {
     if (!isHost) return
 
     const youtubeUrl = youtubeUrlInput.value.trim()
@@ -1491,266 +1877,39 @@ document.addEventListener('DOMContentLoaded', () => {
       return
     }
 
-    // Extract video ID
-    const videoId = extractYouTubeVideoId(youtubeUrl)
+    const videoId = getYouTubeVideoId(youtubeUrl)
     if (!videoId) {
-      alert('Invalid YouTube URL')
+      alert('Invalid YouTube URL. Please enter a valid YouTube video URL.')
       return
     }
 
-    youtubeVideoId = videoId
-
-    // Tell clients we're starting YouTube stream mode
-    socket.emit('youtube-stream-start', { videoId })
-
-    // Start streaming the YouTube video content
-    startYouTubeStream(videoId)
-  })
-
-  // YouTube stream handler for host
-  function startYouTubeStream(videoId) {
-    if (!isHost) return
-
-    isStreamingYouTube = true
-
-    // Show streaming status
-    connectionStatus.textContent = 'Streaming YouTube video...'
-
-    // Load the YouTube player on host side
-    if (!youtubePlayer) {
-      // Load YouTube API script
-      if (!window.YT) {
-        const tag = document.createElement('script')
-        tag.src = 'https://www.youtube.com/iframe_api'
-        const firstScriptTag = document.getElementsByTagName('script')[0]
-        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag)
-
-        window.onYouTubeIframeAPIReady = initYouTubePlayer
-      } else {
-        initYouTubePlayer()
-      }
-    } else {
-      // YouTube player already exists, just load the new video
-      youtubePlayer.loadVideoById(videoId)
-      youtubeContainer.classList.remove('hidden')
-
-      // Start audio capture from the YouTube player
-      captureYouTubeAudio()
-    }
-
-    function initYouTubePlayer() {
-      youtubeContainer.classList.remove('hidden')
-
-      youtubePlayer = new YT.Player('youtube-container', {
-        height: '360',
-        width: '640',
-        videoId: videoId,
-        playerVars: {
-          playsinline: 1,
-          autoplay: 1,
-          controls: 1,
-        },
-        events: {
-          onReady: onYouTubePlayerReady,
-          onStateChange: onYouTubePlayerStateChange,
-        },
-      })
-    }
-
-    function onYouTubePlayerReady(event) {
-      isYoutubeReady = true
-      event.target.playVideo()
-
-      // Start audio capture from the YouTube player
-      captureYouTubeAudio()
-    }
-
-    function onYouTubePlayerStateChange(event) {
-      // Broadcast YouTube player state changes to clients
-      if (isHost) {
-        const state = event.data
-
-        switch (state) {
-          case YT.PlayerState.PLAYING:
-            socket.emit('youtube-control', {
-              action: 'play',
-              currentTime: youtubePlayer.getCurrentTime(),
-            })
-            break
-
-          case YT.PlayerState.PAUSED:
-            socket.emit('youtube-control', {
-              action: 'pause',
-              currentTime: youtubePlayer.getCurrentTime(),
-            })
-            break
-
-          case YT.PlayerState.ENDED:
-            socket.emit('youtube-control', { action: 'end' })
-            break
-        }
-      }
-    }
-  }
-
-  // Extract YouTube video ID from URL
-  function extractYouTubeVideoId(url) {
-    const regExp =
-      /^.*((youtu.be\/)|(v\/)|(\/u\/\w\/)|(embed\/)|(watch\?))\??v?=?([^#&?]*).*/
-    const match = url.match(regExp)
-    return match && match[7].length === 11 ? match[7] : null
-  }
-
-  // Capture audio from YouTube player and stream to clients
-  function captureYouTubeAudio() {
-    if (!isHost || !isYoutubeReady || !youtubePlayer) return
-
-    // First attempt to use Media Streams API if available
     try {
-      // This requires user to switch to tab audio streaming for full control
-      // because browser security restricts direct element audio capture
-      if (!isStreaming) {
-        if (
-          confirm(
-            'To stream YouTube audio to clients, we need to capture your browser tab audio. Continue?'
-          )
-        ) {
-          startTabAudioStream(true) // Start tab streaming with YouTube mode flag
-        }
-      }
-    } catch (error) {
-      console.error('Error capturing YouTube audio:', error)
-      // Fallback to classic sync
-      alert(
-        'Direct streaming not available. Using standard YouTube sync instead.'
-      )
-
-      // Fall back to classic sync method - clients load their own YouTube videos
-      socket.emit('youtube-sync', {
-        videoId: youtubeVideoId,
-        currentTime: youtubePlayer.getCurrentTime(),
-        isPaused: youtubePlayer.getPlayerState() === YT.PlayerState.PAUSED,
-      })
-    }
-  }
-
-  // Client-side YouTube stream handling
-  socket.on('youtube-stream-start', (data) => {
-    if (isHost) return // Host doesn't need to handle this
-
-    youtubeVideoId = data.videoId
-
-    // Hide audio player if shown
-    playerContainer.classList.add('hidden')
-
-    // Show client message
-    clientMessage.classList.remove('hidden')
-    clientStatus.textContent = 'Receiving YouTube stream from host...'
-
-    // Initialize audio context for streaming if needed
-    if (!clientAudioContext) {
-      initClientAudioContext()
-    }
-  })
-
-  // YouTube control messages from host
-  socket.on('youtube-control', (data) => {
-    if (isHost) return // Host doesn't need to handle this
-
-    switch (data.action) {
-      case 'play':
-        // If we're in streaming mode, this is handled by audio stream
-        if (!isStreamingYouTube && youtubePlayer) {
-          youtubePlayer.seekTo(data.currentTime)
-          youtubePlayer.playVideo()
-        }
-        break
-
-      case 'pause':
-        if (!isStreamingYouTube && youtubePlayer) {
-          youtubePlayer.pauseVideo()
-        }
-        break
-
-      case 'seek':
-        if (!isStreamingYouTube && youtubePlayer) {
-          youtubePlayer.seekTo(data.currentTime)
-        }
-        break
-
-      case 'end':
-        if (!isStreamingYouTube && youtubePlayer) {
-          youtubePlayer.stopVideo()
-        }
-        clientStatus.textContent = 'YouTube video ended'
-        break
-    }
-  })
-
-  // Standard YouTube sync (fallback)
-  socket.on('youtube-sync', (data) => {
-    youtubeVideoId = data.videoId
-    isStreamingYouTube = false
-
-    // Hide audio player if shown
-    playerContainer.classList.add('hidden')
-
-    // If client side, load YouTube player
-    if (!isHost) {
-      youtubeContainer.classList.remove('hidden')
-      clientMessage.classList.remove('hidden')
-      clientStatus.textContent = 'Loading YouTube video...'
+      connectionStatus.textContent = 'Loading YouTube...'
 
       // Load YouTube API if not already loaded
-      if (!window.YT) {
-        const tag = document.createElement('script')
-        tag.src = 'https://www.youtube.com/iframe_api'
-        const firstScriptTag = document.getElementsByTagName('script')[0]
-        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag)
-
-        window.onYouTubeIframeAPIReady = () => {
-          initClientYouTubePlayer(data)
-        }
-      } else {
-        initClientYouTubePlayer(data)
+      if (!isYoutubeReady) {
+        await loadYouTubeAPI()
       }
+
+      // Initialize player for host
+      await initYouTubePlayer(videoId)
+
+      // Send to clients
+      socket.emit('youtube-sync', {
+        videoId: videoId,
+        url: youtubeUrl,
+      })
+
+      connectionStatus.textContent = 'Connected'
+    } catch (error) {
+      console.error('Error syncing YouTube:', error)
+      connectionStatus.textContent = 'YouTube sync error'
+
+      setTimeout(() => {
+        connectionStatus.textContent = 'Connected'
+      }, 3000)
     }
   })
-
-  function initClientYouTubePlayer(data) {
-    if (youtubePlayer) {
-      youtubePlayer.loadVideoById({
-        videoId: data.videoId,
-        startSeconds: data.currentTime,
-      })
-
-      if (data.isPaused) {
-        youtubePlayer.pauseVideo()
-      } else {
-        youtubePlayer.playVideo()
-      }
-    } else {
-      youtubePlayer = new YT.Player('youtube-container', {
-        height: '360',
-        width: '640',
-        videoId: data.videoId,
-        playerVars: {
-          start: Math.floor(data.currentTime),
-          playsinline: 1,
-          autoplay: data.isPaused ? 0 : 1,
-          controls: 0, // Hide controls for clients
-        },
-        events: {
-          onReady: (event) => {
-            if (data.isPaused) {
-              event.target.pauseVideo()
-            }
-            clientStatus.textContent = 'YouTube video synced with host'
-          },
-        },
-      })
-    }
-  }
 
   // Start streaming audio from a browser tab
   async function startTabAudioStream() {
