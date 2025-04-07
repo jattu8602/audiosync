@@ -939,6 +939,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Update user count
     networkUsersElement.textContent = data.users.length
 
+    console.log('Received users update:', data)
+
     // Save the users for our UI
     updateUsersList(data.users)
   })
@@ -1137,6 +1139,8 @@ document.addEventListener('DOMContentLoaded', () => {
   function updateUsersList(networkUsers) {
     usersList.innerHTML = ''
 
+    console.log('Updating users list with:', networkUsers)
+
     if (!networkUsers || networkUsers.length === 0) {
       const li = document.createElement('li')
       li.textContent = 'No other users connected to your network'
@@ -1145,8 +1149,30 @@ document.addEventListener('DOMContentLoaded', () => {
       return
     }
 
+    // First, display the current user at the top if present
+    let currentUserDisplayed = false
+
+    // Find and display current user first
     networkUsers.forEach((user) => {
+      if (user.id === sessionId) {
+        const li = createUserListItem(user, true)
+        usersList.appendChild(li)
+        currentUserDisplayed = true
+      }
+    })
+
+    // Then display all other users
+    networkUsers.forEach((user) => {
+      if (user.id !== sessionId) {
+        const li = createUserListItem(user, false)
+        usersList.appendChild(li)
+      }
+    })
+
+    // Helper function to create a user list item
+    function createUserListItem(user, isCurrentUser) {
       const li = document.createElement('li')
+      let classes = []
 
       // Create user display with IP suffix for identification
       let userDisplay = `User ${user.id.substring(0, 6)}...`
@@ -1157,13 +1183,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (user.isHost) {
         userDisplay += ' (Host)'
-        li.className = 'host-user'
+        classes.push('host-user')
       }
 
-      if (user.id === sessionId) {
+      if (isCurrentUser) {
         userDisplay += ' (You)'
-        li.className += ' current-user'
+        classes.push('current-user')
       }
+
+      li.className = classes.join(' ')
 
       // Create a text span for the user display
       const textSpan = document.createElement('span')
@@ -1171,7 +1199,7 @@ document.addEventListener('DOMContentLoaded', () => {
       li.appendChild(textSpan)
 
       // Add transfer host button if the current user is host and this is another user
-      if (isHost && user.id !== sessionId) {
+      if (isHost && !isCurrentUser) {
         const transferButton = document.createElement('button')
         transferButton.textContent = 'Make Host'
         transferButton.className = 'transfer-host-button'
@@ -1181,8 +1209,8 @@ document.addEventListener('DOMContentLoaded', () => {
         li.appendChild(transferButton)
       }
 
-      usersList.appendChild(li)
-    })
+      return li
+    }
   }
 
   // Function to transfer host status to another user

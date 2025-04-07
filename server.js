@@ -46,9 +46,22 @@ function getNetworkId(ip) {
     return 'local-development'
   }
 
-  // For regular IPv4 addresses, use the first three octets
+  // For regular IPv4 addresses, use more specific network identification
   if (ip.includes('.')) {
-    return ip.split('.').slice(0, 3).join('.')
+    const parts = ip.split('.')
+
+    // Check for common mobile hotspot ranges (192.168.43.x, 192.168.42.x)
+    if (
+      parts[0] === '192' &&
+      parts[1] === '168' &&
+      (parts[2] === '42' || parts[2] === '43')
+    ) {
+      return 'mobile-hotspot'
+    }
+
+    // For other IPv4, use only the first two octets to be more permissive in network matching
+    // This will help group more devices on the same network
+    return parts.slice(0, 2).join('.')
   }
 
   // For IPv6 addresses, use the first 4 segments
@@ -290,6 +303,18 @@ io.on('connection', (socket) => {
     existingUser.networkId = networkId
     users.set(sessionId, existingUser)
 
+    // Notify all users on the same network that a new user has joined
+    for (const userId of network) {
+      const otherUser = users.get(userId)
+      if (otherUser && otherUser.socketId !== socket.id) {
+        io.to(otherUser.socketId).emit('network-info', {
+          networkId,
+          roomCode: otherUser.roomCode,
+          userCount: network.size,
+        })
+      }
+    }
+
     // Send network/room information to client
     socket.emit('network-info', {
       networkId,
@@ -328,6 +353,18 @@ io.on('connection', (socket) => {
       networks.set(networkId, network)
     }
     network.add(sessionId)
+
+    // Notify all users on the same network that a new user has joined
+    for (const userId of network) {
+      const otherUser = users.get(userId)
+      if (otherUser && otherUser.socketId !== socket.id) {
+        io.to(otherUser.socketId).emit('network-info', {
+          networkId,
+          roomCode: otherUser.roomCode,
+          userCount: network.size,
+        })
+      }
+    }
 
     // Send network/room information to client
     socket.emit('network-info', {
@@ -403,7 +440,34 @@ io.on('connection', (socket) => {
     existingUser?.roomCode || userRoomCode
       ? existingUser?.roomCode || userRoomCode
       : networkId
+
+  // Update user list for this user first to ensure they have the latest data
   updateUsersInGroup(userGroup2)
+
+  // Send an immediate users list update to this user specifically
+  const isRoomCode = rooms.has(userGroup2)
+  const group = isRoomCode ? rooms.get(userGroup2) : networks.get(userGroup2)
+
+  if (group) {
+    const usersList = Array.from(group)
+      .map((userId) => {
+        const user = users.get(userId)
+        if (!user) return null
+
+        return {
+          id: userId,
+          isHost: user.isHost,
+          ipSuffix: getLastPart(user.ip),
+        }
+      })
+      .filter(Boolean)
+
+    socket.emit('users-update', {
+      users: usersList,
+      groupId: userGroup2,
+      sameNetwork: true,
+    })
+  }
 
   // Generate room
   socket.on('create-room', () => {
